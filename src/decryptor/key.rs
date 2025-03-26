@@ -21,8 +21,9 @@ impl DecryptKey {
             i = (i + key[j] as usize + sbox[j] as usize) % key_len;
             sbox.swap(i, j);
         }
-        Self { key, hash, sbox, key_len}
+        Self { key, hash, sbox, key_len }
     }
+
 }
 
 #[cfg(test)]
