@@ -1,56 +1,45 @@
 use super::Decryptor;
+use super::Decryption;
+use crate::read_write_buf::ReadWriteBuf;
 use std::io;
-
-const BLOCK_SIZE: usize = 0x1400;
+use crate::consts::{SKIP_TO_NAME, NAME_SIZE, SKIP_TO_KEY, KEY_SIZE, BLOCK_SIZE, TAIL_SIZE};
 
 impl Decryptor {
-    pub fn decrypt(&mut self) -> io::Result<()> {
-        while let Ok(size) = self.read() {
-            if size == 0 {
-                break;
+    pub fn decrypt_all(&mut self) -> io::Result<()> {
+        let mut pos = 0;
+        while pos < self.decrypted_db.len() {
+            pos += SKIP_TO_NAME;
+
+            let name = String::from_utf8_lossy(&self.decrypted_db[pos..pos+NAME_SIZE]);
+            let filename = match self.name_to_filename.get(name.as_ref()) {
+                Some(value) => value,
+                None => {
+                    pos += NAME_SIZE + SKIP_TO_KEY + KEY_SIZE;
+                    continue;
+                }
+            };
+
+            pos += NAME_SIZE + SKIP_TO_KEY;
+
+            let key = &self.decrypted_db[pos..pos+KEY_SIZE];
+            let mut decryption = Decryption::new(key);
+            let mut read_write_buf = ReadWriteBuf::new(
+                &format!("{}\\{}", self.input_path, filename),
+                &format!("{}\\{}", self.output_path, [filename.split(".mflac").next().unwrap(), ".flac"].concat()),
+                BLOCK_SIZE)?;
+            
+            while read_write_buf.get_position() + BLOCK_SIZE + TAIL_SIZE <= read_write_buf.get_file_size() {
+                read_write_buf.process_with(BLOCK_SIZE,
+                    |data, cur_pos, dec_size| decryption.tweaked_rc4(data, cur_pos, dec_size))?;
             }
-            self.tweaked_rc4(size);
-            self.write(size)?;
+            while read_write_buf.get_position() + TAIL_SIZE < read_write_buf.get_file_size() {
+                read_write_buf.process_with(read_write_buf.get_file_size() - TAIL_SIZE - read_write_buf.get_position(),
+                |data, cur_pos, dec_size| decryption.tweaked_rc4(data, cur_pos, dec_size))?;
+            }
+            pos += KEY_SIZE;
         }
+
         Ok(())
-    }
-
-    fn calc(&self, seed: usize) -> usize {
-        (self.decrypt_key.hash as f64 / (self.decrypt_key.key[seed % self.decrypt_key.key_len] as usize * (seed + 1)) as f64 * 100.0) as usize % self.decrypt_key.key_len
-    }
-
-    fn tweaked_rc4(&mut self, dec_size: usize) {
-        let cur_pos = self.get_current_position().unwrap();
-        if cur_pos <= 0x80 {
-            for i in 0..0x80 {
-                let pos = self.calc(i + cur_pos as usize);
-                self.block[i] ^= self.decrypt_key.key[pos];
-            }
-            self.dec_part(cur_pos + 0x80, dec_size - 0x80, 0x80);
-        } else {
-            let remain = BLOCK_SIZE - cur_pos as usize % BLOCK_SIZE;
-            if dec_size > remain {
-                self.dec_part(cur_pos, remain, 0);
-                self.dec_part(cur_pos + remain as u64, dec_size - remain, remain);
-            } else {
-                self.dec_part(cur_pos, dec_size, 0);
-            }
-        }
-    }
-
-    fn dec_part(&mut self, cur_pos: u64, dec_size: usize, seg_pos: usize) {
-        let key_len = self.decrypt_key.key_len;
-        let mut perm = self.decrypt_key.sbox.clone();
-        let rounds = cur_pos as usize % BLOCK_SIZE + self.calc(cur_pos as usize / BLOCK_SIZE);
-        let mut i = 0;
-
-        for j in 1..dec_size+rounds+1 {
-            i = (i + perm[j % key_len] as usize) % key_len;
-            perm.swap(i, j % key_len);
-            if j > rounds {
-                self.block[seg_pos + j - rounds - 1] ^= perm[(perm[i] as usize + perm[j % key_len] as usize) % key_len];
-            }
-        }
     }
 
 }

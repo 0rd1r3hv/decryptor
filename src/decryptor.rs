@@ -1,64 +1,56 @@
-use std::io::{self, BufReader, BufWriter, Read, Write, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
+use std::collections::HashMap;
 use std::fs::File;
 use std::process::Command;
 use md5;
 use byteorder::{LittleEndian, ReadBytesExt};
 use aes::Aes128;
 use aes::cipher::{BlockDecryptMut, KeyIvInit,generic_array::GenericArray};
+use crate::utils::get_name_to_filename;
 
 mod decrypt;
 mod key;
-mod tweaked_tea;
+mod tweaked_rc4;
+
+const SUFFIX: [u8; 8] = [0x5C, 0xBD, 0x98, 0x7C, 0x1C, 0x38, 0x17, 0x8E];
 pub struct Decryptor {
-    reader: BufReader<File>,
-    writer: BufWriter<File>,
-    block: Vec<u8>,
-    decrypt_key: DecryptKey,
+    input_path: String,
+    output_path: String,
+    db_key: [u8; 16],
     decrypted_db: Vec<u8>,
+    name_to_filename: HashMap<String, String>,
 }
 
-pub struct DecryptKey {
+pub struct Decryption {
     key: Vec<u8>,
     hash: u32,
     sbox: Vec<u8>,
-    key_len: usize,
 }
 
 impl Decryptor {
-    pub fn new(input_path: &str, output_path: &str, block_size: usize, key: &str) -> io::Result<Self> {
-        let input_file = File::open(input_path)?;
-        let output_file = File::create(output_path)?;
-
+    pub fn new(input_path: &str, output_path: &str) -> io::Result<Self> {
+        let input_path = input_path.to_string();
+        let output_path = output_path.to_string();
+        let db_key = Self::gen_db_key();
+        let name_to_filename = get_name_to_filename(&input_path);
+        let decrypted_db = Self::dec_db(db_key)?;
         Ok(Self {
-            reader: BufReader::new(input_file),
-            writer: BufWriter::new(output_file),
-            block: vec![0; block_size],
-            decrypt_key: DecryptKey::new(key),
-            decrypted_db: Self::dec_db(Self::gen_db_key())?,
+            input_path,
+            output_path,
+            db_key,
+            decrypted_db,
+            name_to_filename,
         })
     }
 
-    fn read(&mut self) -> io::Result<usize> {
-        self.reader.read(&mut self.block)
-    }
-
-    fn write(&mut self, size: usize) -> io::Result<()> {
-        self.writer.write_all(&self.block[..size])
-    }
-
-    fn get_current_position(&mut self) -> io::Result<u64> {
-        self.writer.stream_position()
-    }
-
     fn gen_db_key() -> [u8; 16] {
-        let suffix: Vec<u8> = vec![0x5C, 0xBD, 0x98, 0x7C, 0x1C, 0x38, 0x17, 0x8E];
         let db_key = Command::new("powershell")
             .arg("-File")
             .arg(".\\scripts\\keygen.ps1")
             .output()
             .expect("Fail to execute PowerShell script")
             .stdout;
-        let db_key = md5::compute([&db_key[..db_key.len() - 2], &suffix].concat());
+        let db_key = md5::compute([&db_key[..db_key.len() - 2], &SUFFIX].concat());
         format!(
             "{:08X}{:02X}{:02X}",
             u32::from_le_bytes((&db_key[0..4]).try_into().unwrap()),
@@ -94,12 +86,6 @@ impl Decryptor {
         Ok(blocks.into_iter().flatten().collect::<Vec<u8>>()[4..size].to_vec())
     }
 
-}
-
-impl Drop for Decryptor {
-    fn drop(&mut self) {
-        let _ = self.writer.flush();
-    }
 }
 
 #[cfg(test)]
