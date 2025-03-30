@@ -1,5 +1,5 @@
-use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::fs::File;
+use std::io::{self, BufReader, BufWriter, Read, Write};
 
 pub struct ReadWriteBuf {
     reader: BufReader<File>,
@@ -22,7 +22,6 @@ impl ReadWriteBuf {
             file_size,
             position: 0,
         })
-
     }
 
     pub fn process_with<F>(&mut self, size: usize, mut processor: F) -> io::Result<usize>
@@ -35,15 +34,14 @@ impl ReadWriteBuf {
         self.position += read_size;
         Ok(read_size)
     }
-    
+
     pub fn get_position(&self) -> usize {
         self.position
     }
-    
+
     pub fn get_file_size(&self) -> usize {
         self.file_size
     }
-
 }
 
 impl Drop for ReadWriteBuf {

@@ -1,16 +1,15 @@
-use std::io::{self, Read, Seek, SeekFrom};
+use crate::utils::get_name_to_filename;
+use aes::Aes128;
+use aes::cipher::{BlockDecryptMut, KeyIvInit, generic_array::GenericArray};
+use byteorder::{LittleEndian, ReadBytesExt};
+use md5;
 use std::collections::HashMap;
 use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::process::Command;
-use md5;
-use byteorder::{LittleEndian, ReadBytesExt};
-use aes::Aes128;
-use aes::cipher::{BlockDecryptMut, KeyIvInit,generic_array::GenericArray};
-use crate::utils::get_name_to_filename;
 
 mod decrypt;
-mod key;
-mod tweaked_rc4;
+mod decryption;
 
 const SUFFIX: [u8; 8] = [0x5C, 0xBD, 0x98, 0x7C, 0x1C, 0x38, 0x17, 0x8E];
 pub struct Decryptor {
@@ -21,10 +20,12 @@ pub struct Decryptor {
     name_to_filename: HashMap<String, String>,
 }
 
+trait Cipher {
+    fn decrypt(&self, buf: &mut [u8], cur_pos: usize, dec_size: usize);
+}
+
 pub struct Decryption {
-    key: Vec<u8>,
-    hash: u32,
-    sbox: Vec<u8>,
+    cipher: Box<dyn Cipher>,
 }
 
 impl Decryptor {
@@ -55,16 +56,20 @@ impl Decryptor {
             "{:08X}{:02X}{:02X}",
             u32::from_le_bytes((&db_key[0..4]).try_into().unwrap()),
             u16::from_le_bytes((&db_key[4..6]).try_into().unwrap()),
-            u16::from_le_bytes((&db_key[6..8]).try_into().unwrap()))
-            .as_bytes()
-            .try_into()
-            .expect("Key length error")
+            u16::from_le_bytes((&db_key[6..8]).try_into().unwrap())
+        )
+        .as_bytes()
+        .try_into()
+        .expect("Key length error")
     }
 
     fn dec_db(db_key: [u8; 16]) -> io::Result<Vec<u8>> {
         let app_data = std::env::var("APPDATA").unwrap_or_default();
         let mut db = File::open(format!("{}\\Tencent\\QQMusic\\Driveredbb.dat", app_data))?;
-        let mut crc = File::open(format!("{}\\Tencent\\QQMusic\\Driveredbb.dat.crc", app_data))?;
+        let mut crc = File::open(format!(
+            "{}\\Tencent\\QQMusic\\Driveredbb.dat.crc",
+            app_data
+        ))?;
         let size = db.read_u32::<LittleEndian>()? as usize;
         let buf_size = match size % 16 {
             0 => size,
@@ -79,24 +84,23 @@ impl Decryptor {
         crc.read_exact(&mut iv)?;
 
         let mut cipher = cfb_mode::Decryptor::<Aes128>::new(&db_key.into(), &iv.into());
-        let mut blocks: Vec<_> = db_content.chunks_exact(16)
+        let mut blocks: Vec<_> = db_content
+            .chunks_exact(16)
             .map(GenericArray::clone_from_slice)
             .collect();
         cipher.decrypt_blocks_mut(&mut blocks);
         Ok(blocks.into_iter().flatten().collect::<Vec<u8>>()[4..size].to_vec())
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_dec_db() {
-        let result = Decryptor::dec_db(Decryptor::gen_db_key())
-            .expect("Failed to decrypt db");
-        println!("{:X}", result.len());
-        println!("{}", String::from_utf8_lossy(&result));
+        let result = Decryptor::dec_db(Decryptor::gen_db_key()).expect("Failed to decrypt db");
+        let mut file = File::create("dump.bin").unwrap();
+        file.write_all(&result).unwrap();
     }
 }
