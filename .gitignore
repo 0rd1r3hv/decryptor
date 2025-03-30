@@ -1,1 +1,4 @@
-/target
+**/target/
+dump.bin
+**/*.mflac
+**/*.flac

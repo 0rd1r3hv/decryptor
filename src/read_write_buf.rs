@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::path::Path;
 
 pub struct ReadWriteBuf {
     reader: BufReader<File>,
@@ -10,16 +11,16 @@ pub struct ReadWriteBuf {
 }
 
 impl ReadWriteBuf {
-    pub fn new(input_path: &str, output_path: &str, buf_size: usize) -> io::Result<Self> {
-        let input = File::open(input_path)?;
-        let output = File::create(output_path)?;
-        let file_size = input.metadata()?.len() as usize;
-
+    pub fn new(
+        input_path: impl AsRef<Path>,
+        output_path: impl AsRef<Path>,
+        buf_size: usize,
+    ) -> io::Result<Self> {
         Ok(Self {
-            reader: BufReader::new(input),
-            writer: BufWriter::new(output),
+            file_size: input_path.as_ref().metadata()?.len() as usize,
+            reader: BufReader::new(File::open(input_path)?),
+            writer: BufWriter::new(File::create(output_path)?),
             buffer: vec![0; buf_size],
-            file_size,
             position: 0,
         })
     }
@@ -35,12 +36,12 @@ impl ReadWriteBuf {
         Ok(read_size)
     }
 
-    pub fn get_position(&self) -> usize {
-        self.position
+    pub const fn get_file_size(&self) -> usize {
+        self.file_size
     }
 
-    pub fn get_file_size(&self) -> usize {
-        self.file_size
+    pub const fn get_position(&self) -> usize {
+        self.position
     }
 }
 

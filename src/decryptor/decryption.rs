@@ -1,22 +1,64 @@
-use super::Decryption;
-use crate::consts::MAGIC;
-use crate::consts::{BLOCK_SIZE, HEADER_SIZE, KEY_LEN_MASK};
 use crate::decryptor::Cipher;
+use crate::param::MAGIC;
+use crate::param::{BLOCK_SIZE, HEADER_SIZE, KEY_LEN_MASK};
 use base64::{Engine as _, engine::general_purpose};
-use std::cmp::{Ordering, min};
-use tc_tea;
+use std::cmp::min;
+
+enum CipherType {
+    MapL(MapL),
+    TweakedRC4(TweakedRC4),
+}
+
+impl Cipher for CipherType {
+    fn decrypt(&self, buf: &mut [u8], cur_pos: usize, dec_size: usize) {
+        match self {
+            CipherType::MapL(cipher) => cipher.decrypt(buf, cur_pos, dec_size),
+            CipherType::TweakedRC4(cipher) => cipher.decrypt(buf, cur_pos, dec_size),
+        }
+    }
+}
+
+impl CipherType {
+    pub fn key_len(&self) -> usize {
+        match self {
+            CipherType::MapL(cipher) => cipher.key.len(),
+            CipherType::TweakedRC4(cipher) => cipher.key.len(),
+        }
+    }
+
+    pub fn key(&self) -> &[u8] {
+        match self {
+            CipherType::MapL(cipher) => &cipher.key,
+            CipherType::TweakedRC4(cipher) => &cipher.key,
+        }
+    }
+    pub fn sbox(&self) -> &[u8] {
+        match self {
+            CipherType::MapL(cipher) => &cipher.key,
+            CipherType::TweakedRC4(cipher) => &cipher.sbox,
+        }
+    }
+    pub fn hash(&self) -> u32 {
+        match self {
+            CipherType::MapL(_) => 0,
+            CipherType::TweakedRC4(cipher) => cipher.hash,
+        }
+    }
+}
+
+pub struct Decryption {
+    cipher: CipherType,
+}
 
 impl Decryption {
     pub fn new(key: &[u8]) -> Self {
-        let key = general_purpose::STANDARD.decode(key).unwrap();
-        let key = Self::decrypt_key(&key);
+        let key = Self::decrypt_key(&general_purpose::STANDARD.decode(key).unwrap());
 
-        match key.len().cmp(&300) {
-            Ordering::Less => Self {
-                cipher: Box::new(MapL::new(key)),
-            },
-            _ => Self {
-                cipher: Box::new(TweakedRC4::new(key)),
+        Self {
+            cipher: if key.len() < 300 {
+                CipherType::MapL(MapL::new(key))
+            } else {
+                CipherType::TweakedRC4(TweakedRC4::new(key))
             },
         }
     }
@@ -25,7 +67,7 @@ impl Decryption {
         self.cipher.decrypt(buf, cur_pos, dec_size);
     }
 
-    fn decrypt_key(input: &Vec<u8>) -> Vec<u8> {
+    fn decrypt_key(input: &[u8]) -> Vec<u8> {
         let mut key = [0u8; 16];
 
         for i in 0..8 {
@@ -33,14 +75,12 @@ impl Decryption {
             key[(i << 1) + 1] = input[i];
         }
 
-        let decrypted = [&input[0..8], &tc_tea::decrypt(&input[8..], key).unwrap()].concat();
-        decrypted
+        [&input[0..8], &tc_tea::decrypt(&input[8..], key).unwrap()].concat()
     }
 }
 
 pub struct TweakedRC4 {
     key: Vec<u8>,
-    key_len: usize,
     hash: u32,
     sbox: Vec<u8>,
 }
@@ -48,8 +88,7 @@ pub struct TweakedRC4 {
 impl TweakedRC4 {
     pub fn new(key: Vec<u8>) -> Self {
         let mut hash: u32 = 1;
-        let mut it = key.iter();
-        while let Some(b) = it.next() {
+        for b in key.iter() {
             let tmp = hash.wrapping_mul(*b as u32);
             if tmp == 0 || tmp <= hash {
                 break;
@@ -57,20 +96,14 @@ impl TweakedRC4 {
             hash = tmp;
         }
 
-        let key_len = key.len();
-        let mut sbox: Vec<u8> = (0..key_len).map(|i| i as u8).collect();
+        let mut sbox: Vec<u8> = (0..key.len()).map(|i| i as u8).collect();
         let mut i = 0;
         for j in 0..key.len() {
-            i = (i + key[j] as usize + sbox[j] as usize) % key_len;
+            i = (i + key[j] as usize + sbox[j] as usize) % key.len();
             sbox.swap(i, j);
         }
 
-        Self {
-            key,
-            key_len,
-            hash,
-            sbox,
-        }
+        Self { key, hash, sbox }
     }
 
     fn pseudo_rand(&self, seed: usize) -> usize {
@@ -98,9 +131,9 @@ impl TweakedRC4 {
 impl Cipher for TweakedRC4 {
     fn decrypt(&self, buf: &mut [u8], cur_pos: usize, dec_size: usize) {
         if cur_pos <= HEADER_SIZE {
-            for i in 0..min(HEADER_SIZE, dec_size) {
+            for (i, byte) in buf.iter_mut().take(min(HEADER_SIZE, dec_size)).enumerate() {
                 let pos = self.pseudo_rand(i + cur_pos);
-                buf[i] ^= self.key[pos];
+                *byte ^= self.key[pos];
             }
             if dec_size > HEADER_SIZE {
                 self.dec_part(
@@ -123,45 +156,44 @@ impl Cipher for TweakedRC4 {
     }
 }
 
+#[repr(transparent)]
 pub struct MapL {
     key: Vec<u8>,
-    key_len: usize,
 }
 
 impl MapL {
     pub fn new(key: Vec<u8>) -> Self {
-        let key_len = key.len();
-        Self { key, key_len }
+        Self { key }
     }
 }
 
 impl Cipher for MapL {
     fn decrypt(&self, buf: &mut [u8], cur_pos: usize, dec_size: usize) {
-        for i in 0..dec_size {
+        for (i, byte) in buf.iter_mut().take(dec_size).enumerate() {
             let mut offset = cur_pos + i;
             if offset > 0x7FFF {
                 offset %= 0x7FFF;
             }
-            let idx = (offset * offset + 71214) % self.key_len;
+            let idx = (offset * offset + 71214) % self.key.len();
             let rot = (idx + 4) % 8;
             let val = self.key[idx];
 
-            buf[i] ^= (val >> rot) | (val << rot);
+            *byte ^= (val >> rot) | (val << rot);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Decryption;
 
     #[test]
     fn test_tweasked_rc4() {
-        let decrypt_key = TweakedRC4::new("dkR3eWM4b2Ld1cSWGovVomjqZmzlJQlIfbKf5LssgfXkln683OG0OlrotgDjcBt4lR2unxmHnWNX2wGQV/XDuo1NFbBZilXfUM5T/i/JAJ1Le7Y+iNvU1tiZZ9KXOsbHBU5KATwqP3TQA0Ti9gLfa8TS0TiOS+Q2behhWqFCrl9AUqeNMFRd5rbhGcMqQ+Q/8N6Fl32rXMN2Z4dOYYtsp5kSxPt3sKMRgJuXaV/ZqAqbRQNnhcMyPeIqTV439X49Av8261OSUv5YS2YgbR1aPsTX9+qYdYGdjslr57o4/idpUKPvZ0/dIgaFjewG/qo8ClkmL1w1FnDiKqaymFXl7axby2ohu3DkU0PkJbVA82Q6I/MLuiKC6nn/jyPrfGmWi69cLQJmG8aSf4PvLaDXOZ4oXjSmUId6LfWc4Nwb30ysxAjgjl6q8e3QTWq5kO2Ouvb2ksA25QtNpi8jMHHBySsunWh49UCq+QTvKa1VX3qPa75YMAkCCnKPgKPw68TDynqfaOmoZh/5VnXzWvZX7RaOe8X0jRhleyc8tDXjc1KfHrOJx1G49zfE/wC5Vm+OU+R4N4EQ2k1lFMJgSL8DYnprQi+Ut5ua1v+9GSF8zaBxMmWGwM2X2f8fmBD1DjtifG1zFaazeNaYL8BeYIcbf1lzrXbJtS+3i3ArMNRSBXsq8Sa54oqXwyOmztyxK7jr".as_bytes().to_vec());
-        assert_eq!(decrypt_key.key, "vDwyc8obg3BP89z9f5U01MyykZBu70N426u0dRChsaX3FxxP214WN9Gf9W8F9G8p81RhqxzYjn7zx32Dzdj9Lza5x3DiHB0u9ZMc9L66qh0W15E4EvE7B06CF13VrTJt8iqRgxp8NU7m722x499vRi6fubQ4UTwqYkM60onhUlX3UVL05S6yBQ21H5z99oFDBf57tg60P7N30Q4cS8M88Llh48UE5xS03tbgyh99qpD0txT0773zCxwx2Yi9jnf09Ww7325NDoFPhtS28nt97XyBXRC67xt6xamq83bCZ2cMmzmsxB6Q47Jl8lnB2I4h6p7Ph2J9a2mQ896m174KQ6y6Bru05f9HX125J1F6DYmWe48mCF5742z469IMAoq702l62CY3S7K67059dw2980IpJgzGEj5u1tJCnvNApRE9uYQ14jtd8gN37Ujiix48l5NNxJdqFsxUjIMH6Dah5MoLr0Gy4FHL759p215hinE6u41j9E154R199Se1NdY6".as_bytes());
-        assert_eq!(decrypt_key.key_len, 512);
+        let decrypt_key = Decryption::new("dkR3eWM4b2Ld1cSWGovVomjqZmzlJQlIfbKf5LssgfXkln683OG0OlrotgDjcBt4lR2unxmHnWNX2wGQV/XDuo1NFbBZilXfUM5T/i/JAJ1Le7Y+iNvU1tiZZ9KXOsbHBU5KATwqP3TQA0Ti9gLfa8TS0TiOS+Q2behhWqFCrl9AUqeNMFRd5rbhGcMqQ+Q/8N6Fl32rXMN2Z4dOYYtsp5kSxPt3sKMRgJuXaV/ZqAqbRQNnhcMyPeIqTV439X49Av8261OSUv5YS2YgbR1aPsTX9+qYdYGdjslr57o4/idpUKPvZ0/dIgaFjewG/qo8ClkmL1w1FnDiKqaymFXl7axby2ohu3DkU0PkJbVA82Q6I/MLuiKC6nn/jyPrfGmWi69cLQJmG8aSf4PvLaDXOZ4oXjSmUId6LfWc4Nwb30ysxAjgjl6q8e3QTWq5kO2Ouvb2ksA25QtNpi8jMHHBySsunWh49UCq+QTvKa1VX3qPa75YMAkCCnKPgKPw68TDynqfaOmoZh/5VnXzWvZX7RaOe8X0jRhleyc8tDXjc1KfHrOJx1G49zfE/wC5Vm+OU+R4N4EQ2k1lFMJgSL8DYnprQi+Ut5ua1v+9GSF8zaBxMmWGwM2X2f8fmBD1DjtifG1zFaazeNaYL8BeYIcbf1lzrXbJtS+3i3ArMNRSBXsq8Sa54oqXwyOmztyxK7jr".as_bytes());
+        assert_eq!(decrypt_key.cipher.key(), "vDwyc8obg3BP89z9f5U01MyykZBu70N426u0dRChsaX3FxxP214WN9Gf9W8F9G8p81RhqxzYjn7zx32Dzdj9Lza5x3DiHB0u9ZMc9L66qh0W15E4EvE7B06CF13VrTJt8iqRgxp8NU7m722x499vRi6fubQ4UTwqYkM60onhUlX3UVL05S6yBQ21H5z99oFDBf57tg60P7N30Q4cS8M88Llh48UE5xS03tbgyh99qpD0txT0773zCxwx2Yi9jnf09Ww7325NDoFPhtS28nt97XyBXRC67xt6xamq83bCZ2cMmzmsxB6Q47Jl8lnB2I4h6p7Ph2J9a2mQ896m174KQ6y6Bru05f9HX125J1F6DYmWe48mCF5742z469IMAoq702l62CY3S7K67059dw2980IpJgzGEj5u1tJCnvNApRE9uYQ14jtd8gN37Ujiix48l5NNxJdqFsxUjIMH6Dah5MoLr0Gy4FHL759p215hinE6u41j9E154R199Se1NdY6".as_bytes());
+        assert_eq!(decrypt_key.cipher.key_len(), 512);
         assert_eq!(
-            decrypt_key.sbox,
+            decrypt_key.cipher.sbox(),
             vec![
                 0x66, 0xBB, 0xFA, 0xEE, 0xAE, 0x63, 0xF9, 0x14, 0xCD, 0x98, 0xA3, 0x84, 0xC8, 0x51,
                 0x21, 0x64, 0x6B, 0x9A, 0x2E, 0xD4, 0x89, 0xEB, 0x9C, 0x9D, 0x7A, 0x52, 0xDC, 0xD9,
@@ -202,6 +234,6 @@ mod tests {
                 0xAC, 0x80, 0xC1, 0x82, 0x1A, 0x06, 0xF2, 0xBF
             ]
         );
-        assert_eq!(decrypt_key.hash, 0xA9C562F8);
+        assert_eq!(decrypt_key.cipher.hash(), 0xA9C562F8);
     }
 }
