@@ -1,10 +1,10 @@
 use super::Decryption;
 use crate::consts::MAGIC;
+use crate::consts::{BLOCK_SIZE, HEADER_SIZE, KEY_LEN_MASK};
 use crate::decryptor::Cipher;
 use base64::{Engine as _, engine::general_purpose};
-use tc_tea;
 use std::cmp::{Ordering, min};
-use crate::consts::{BLOCK_SIZE, HEADER_SIZE, KEY_LEN_MASK};
+use tc_tea;
 
 impl Decryption {
     pub fn new(key: &[u8]) -> Self {
@@ -12,8 +12,12 @@ impl Decryption {
         let key = Self::decrypt_key(&key);
 
         match key.len().cmp(&300) {
-            Ordering::Less => Self { cipher: Box::new(MapL::new(key)) },
-            _ => Self { cipher: Box::new(TweakedRC4::new(key)) },
+            Ordering::Less => Self {
+                cipher: Box::new(MapL::new(key)),
+            },
+            _ => Self {
+                cipher: Box::new(TweakedRC4::new(key)),
+            },
         }
     }
 
@@ -61,7 +65,12 @@ impl TweakedRC4 {
             sbox.swap(i, j);
         }
 
-        Self { key, key_len, hash, sbox }
+        Self {
+            key,
+            key_len,
+            hash,
+            sbox,
+        }
     }
 
     fn pseudo_rand(&self, seed: usize) -> usize {
