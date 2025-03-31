@@ -9,5 +9,6 @@ anyhow = { version = "1.0.96", default-features = false }
 base64 = { version = "0.22.1" }
 byteorder = { version = "1.5.0", default-features = false }
 cfb-mode = { version = "0.8.2", default-features = false }
+clap = "4.5.34"
 md5 = { version = "0.7.0", default-features = false }
 tc_tea = { version = "0.2.1", default-features = false }

@@ -24,6 +24,11 @@ trait Cipher {
 impl Decryptor {
     const SFX_ARR: [u8; 8] = [0x5C, 0xBD, 0x98, 0x7C, 0x1C, 0x38, 0x17, 0x8E];
     pub fn new(in_dir: PathBuf, out_dir: PathBuf) -> Self {
+        if !out_dir.exists() {
+            std::fs::create_dir_all(&out_dir)
+                .with_context(|| format!("Fail to create output directory: {}", out_dir.display()))
+                .unwrap();
+        }
         Self {
             file_map: get_name_path_map(Path::new(&in_dir)).unwrap(),
             out_dir,
@@ -121,10 +126,12 @@ impl Decryptor {
         while let Some((next_buf, name, key)) = parse_next_kv(buf) {
             buf = next_buf;
             if let Some(path) = self.file_map.get(String::from_utf8_lossy(name).as_ref()) {
+                let file_name = path.file_name().unwrap();
+                println!("Decrypting file: {}", file_name.to_string_lossy());
                 let mut read_write_buf = ReadWriteBuf::new(
                     path,
                     {
-                        let mut path = self.out_dir.join(path.file_name().unwrap());
+                        let mut path = self.out_dir.join(file_name);
                         path.set_extension("flac");
                         path
                     },
@@ -144,6 +151,7 @@ impl Decryptor {
                         |data, cur_pos, dec_size| decryption.decrypt(data, cur_pos, dec_size),
                     )?;
                 }
+                println!("Done!");
             }
         }
 
