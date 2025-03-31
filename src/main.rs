@@ -8,7 +8,7 @@ fn main() -> anyhow::Result<()> {
 
     let matches = Command::new("Decryptor")
         .version("0.2.0")
-        .author("0rd1r3hv")
+        .author("@0rd1r3hv, @Kh05ifr4nD")
         .about("Audio decryptor for a specific streaming application")
         .arg(
             Arg::new("input")
