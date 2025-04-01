@@ -1,0 +1,1 @@
+(-join (Get-NetAdapter | Select-Object -ExpandProperty MacAddress)).Replace("-", "").ToLower() + "000000000000"

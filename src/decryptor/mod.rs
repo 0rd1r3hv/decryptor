@@ -23,6 +23,8 @@ trait Cipher {
 
 impl Decryptor {
     const SFX_ARR: [u8; 8] = [0x5C, 0xBD, 0x98, 0x7C, 0x1C, 0x38, 0x17, 0x8E];
+    const CHAR_ARR: [u8; 4] = [0x18, 0x46, 0x30, 0x4D];
+
     pub fn new(in_dir: PathBuf, out_dir: PathBuf) -> Self {
         if !out_dir.exists() {
             std::fs::create_dir_all(&out_dir)
@@ -32,18 +34,35 @@ impl Decryptor {
         Self {
             file_map: get_name_path_map(Path::new(&in_dir)).unwrap(),
             out_dir,
-            decrypted_db: Self::decrypt_db(Self::gen_db_key().unwrap()).unwrap(),
+            decrypted_db: Self::decrypt_db().unwrap(),
         }
     }
 
-    fn gen_db_key() -> Result<[u8; 16]> {
-        let db_key = Command::new("powershell")
+    fn get_first_halves() -> Vec<Vec<u8>> {
+        let output = Command::new("powershell")
             .arg("-File")
-            .arg(".\\scripts\\keygen.ps1")
+            .arg(".\\scripts\\keygen_first_half.ps1")
             .output()
             .expect("Fail to execute PowerShell script")
             .stdout;
-        let db_key = md5::compute([&db_key[..db_key.len() - 2], &Self::SFX_ARR].concat());
+        output[..output.len() - 2]
+            .chunks_exact(12)
+            .map(|chunk| chunk.to_vec())
+            .collect()
+    }
+
+    fn get_second_half() -> Vec<u8> {
+        let output = Command::new("powershell")
+            .arg("-File")
+            .arg(".\\scripts\\keygen_second_half.ps1")
+            .output()
+            .expect("Fail to execute PowerShell script")
+            .stdout;
+        output[..output.len() - 2].to_vec()
+    }
+
+    fn gen_db_key(first_half: &[u8], second_half: &[u8]) -> Result<[u8; 16]> {
+        let db_key = md5::compute([first_half, second_half, &Self::SFX_ARR].concat());
         format!(
             "{:08X}{:02X}{:02X}",
             u32::from_le_bytes((&db_key[0..4]).try_into().unwrap()),
@@ -55,7 +74,7 @@ impl Decryptor {
         .with_context(|| "Key length error")
     }
 
-    fn decrypt_db(db_key: [u8; 16]) -> Result<Vec<u8>> {
+    fn decrypt_db() -> Result<Vec<u8>> {
         let app_dir =
             PathBuf::from(&std::env::var("APPDATA").unwrap_or_default()).join("Tencent\\QQMusic");
         let dat_file_path = get_child_path_by_prfx_and_sfx(&app_dir, "Driver", "dat")?;
@@ -111,8 +130,21 @@ impl Decryptor {
             .chunks_exact(16)
             .map(GenericArray::clone_from_slice)
             .collect();
-        cfb_mode::Decryptor::<Aes128>::new(&db_key.into(), &iv.into())
-            .decrypt_blocks_mut(&mut blocks);
+        let first_halves = Self::get_first_halves();
+        let second_half = Self::get_second_half();
+        for first_half in first_halves {
+            let mut test_block = blocks[0];
+            let db_key = Self::gen_db_key(&first_half, &second_half).unwrap();
+            let mut cipher = cfb_mode::Decryptor::<Aes128>::new(&db_key.into(), &iv.into());
+
+            cipher.decrypt_block_mut(&mut test_block);
+            if test_block[4..8] == Self::CHAR_ARR {
+                println!("Found database key: {}", String::from_utf8_lossy(&db_key));
+                blocks[0] = test_block;
+                cipher.decrypt_blocks_mut(&mut blocks[1..]);
+                break;
+            }
+        }
         Ok(blocks.into_iter().flatten().collect::<Vec<u8>>()[4..size].to_vec())
     }
 
@@ -168,10 +200,7 @@ mod tests {
     fn test_decrypt_db() {
         File::create("dump.bin")
             .expect("Fail to create file.")
-            .write_all(
-                &Decryptor::decrypt_db(Decryptor::gen_db_key().unwrap())
-                    .expect("Fail to decrypt database."),
-            )
+            .write_all(&Decryptor::decrypt_db().expect("Fail to decrypt database."))
             .expect("Fail to write to file.");
     }
 }
