@@ -189,23 +189,23 @@ pub fn get_disk_info() -> Vec<u8> {
             file_name: *const u16,
             desired_access: u32,
             share_mode: u32,
-            security_attributes: *const std::ffi::c_void,
+            security_attributes: *const c_void,
             creation_disposition: u32,
             flags_and_attributes: u32,
-            template_file: *const std::ffi::c_void,
-        ) -> *mut std::ffi::c_void;
+            template_file: *const c_void,
+        ) -> *mut c_void;
 
-        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
 
         fn DeviceIoControl(
-            device: *mut std::ffi::c_void,
+            device: *mut c_void,
             io_control_code: u32,
-            in_buffer: *mut std::ffi::c_void,
+            in_buffer: *mut c_void,
             in_buffer_size: u32,
-            out_buffer: *mut std::ffi::c_void,
+            out_buffer: *mut c_void,
             out_buffer_size: u32,
             bytes_returned: *mut u32,
-            overlapped: *mut std::ffi::c_void,
+            overlapped: *mut c_void,
         ) -> i32;
     }
 
