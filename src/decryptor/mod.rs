@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 mod decryption;
 
@@ -38,29 +37,6 @@ impl Decryptor {
         }
     }
 
-    fn get_first_halves() -> Vec<Vec<u8>> {
-        let output = Command::new("powershell")
-            .arg("-File")
-            .arg(".\\scripts\\keygen_first_half.ps1")
-            .output()
-            .expect("Fail to execute PowerShell script")
-            .stdout;
-        output[..output.len() - 2]
-            .chunks_exact(12)
-            .map(|chunk| chunk.to_vec())
-            .collect()
-    }
-
-    fn get_second_half() -> Vec<u8> {
-        let output = Command::new("powershell")
-            .arg("-File")
-            .arg(".\\scripts\\keygen_second_half.ps1")
-            .output()
-            .expect("Fail to execute PowerShell script")
-            .stdout;
-        output[..output.len() - 2].to_vec()
-    }
-
     fn gen_db_key(first_half: &[u8], second_half: &[u8]) -> Result<[u8; 16]> {
         let db_key = md5::compute([first_half, second_half, &Self::SFX_ARR].concat());
         format!(
@@ -75,6 +51,8 @@ impl Decryptor {
     }
 
     fn decrypt_db() -> Result<Vec<u8>> {
+        use crate::utils::{get_disk_info, get_mac_addresses};
+
         let app_dir =
             PathBuf::from(&std::env::var("APPDATA").unwrap_or_default()).join("Tencent\\QQMusic");
         let dat_file_path = get_child_path_by_prfx_and_sfx(&app_dir, "Driver", "dat")?;
@@ -130,8 +108,8 @@ impl Decryptor {
             .chunks_exact(16)
             .map(GenericArray::clone_from_slice)
             .collect();
-        let first_halves = Self::get_first_halves();
-        let second_half = Self::get_second_half();
+        let first_halves = get_mac_addresses();
+        let second_half = get_disk_info();
         for first_half in first_halves {
             let mut test_block = blocks[0];
             let db_key = Self::gen_db_key(&first_half, &second_half).unwrap();

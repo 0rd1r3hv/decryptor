@@ -7,12 +7,12 @@ codegen-units = 1
 debug = false
 incremental = true
 lto = "fat"
-opt-level = "z"
+opt-level = 3
 strip = "symbols"
+panic = "abort"
 
 [target.'cfg(all())']
 rustflags = [
-  "-Dunsafe_code",
   "-Wclippy::all",
   "-Wclippy::await_holding_lock",
   "-Wclippy::char_lit_as_u8",
